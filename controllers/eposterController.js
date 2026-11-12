@@ -1,6 +1,7 @@
 
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+
 import {
   PutObjectCommand,
   DeleteObjectCommand,
@@ -11,8 +12,13 @@ import s3 from "../config/s3.js";
 import sendEposterEmail from "../utils/sendEmail.js";
 import { sendEposterWhatsApp } from "../utils/aisensyWhatsApp.js";
 
-// Replace this with your actual ZeptoMail template key.
-const ZEPTO_EPOSTER_TEMPLATE_KEY = "2518b.554b0da719bc314.k1.0dd1d000-ddb1-11f1-99e7-d2cf08f4ca8c.1a1c9e81900";
+// ZeptoMail template key
+const ZEPTO_EPOSTER_TEMPLATE_KEY =
+  "2518b.554b0da719bc314.k1.0dd1d000-ddb1-11f1-99e7-d2cf08f4ca8c.1a1c9e81900";
+
+// ========================================
+// Helpers
+// ========================================
 
 const createValidationError = (message) => {
   const error = new Error(message);
@@ -20,9 +26,14 @@ const createValidationError = (message) => {
   return error;
 };
 
-// ========================================
-// Notification Status Helpers
-// ========================================
+const getPublicS3Url = (bucketName, region, key) => {
+  const encodedKey = key
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+
+  return `https://${bucketName}.s3.${region}.amazonaws.com/${encodedKey}`;
+};
 
 const updateNotificationStatus = async (
   eposterId,
@@ -43,7 +54,6 @@ const updateNotificationStatus = async (
       { $set: update }
     );
   } catch (updateError) {
-    // Notification tracking failure must not reverse submission.
     console.error(
       `Failed to update ${notificationType} status:`,
       updateError
@@ -57,16 +67,18 @@ const updateNotificationStatus = async (
 
 export const createEposter = async (req, res, next) => {
   let uploadedS3Key = null;
+  let databaseCreated = false;
 
   try {
     const bucketName = process.env.AWS_BUCKET_NAME;
+    const region =
+      process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION;
 
-    if (!bucketName) {
+    if (!bucketName || !region) {
       throw new Error("AWS S3 bucket configuration is missing.");
     }
 
-    if (!ZEPTO_EPOSTER_TEMPLATE_KEY ||
-        ZEPTO_EPOSTER_TEMPLATE_KEY === "YOUR_ZEPTOMAIL_TEMPLATE_KEY") {
+    if (!ZEPTO_EPOSTER_TEMPLATE_KEY) {
       throw new Error("ZeptoMail EPoster template key is not configured.");
     }
 
@@ -95,9 +107,7 @@ export const createEposter = async (req, res, next) => {
 
     for (const [field, value] of Object.entries(requiredFields)) {
       if (typeof value !== "string" || !value.trim()) {
-        throw createValidationError(
-          `${field} is required.`
-        );
+        throw createValidationError(`${field} is required.`);
       }
     }
 
@@ -106,7 +116,9 @@ export const createEposter = async (req, res, next) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!emailRegex.test(normalizedEmail)) {
-      throw createValidationError("Please provide a valid email address.");
+      throw createValidationError(
+        "Please provide a valid email address."
+      );
     }
 
     if (!req.file?.buffer) {
@@ -119,15 +131,28 @@ export const createEposter = async (req, res, next) => {
 
     const extension = path.extname(req.file.originalname).toLowerCase();
 
-    const fileKey = `eposters/${randomUUID()}${extension}`;
+    const safePresenterName = presenterName
+  .trim()
+  .replace(/[^a-zA-Z0-9]+/g, "_")
+  .replace(/^_+|_+$/g, "")
+  .slice(0, 80);
+
+const fileKey = `eposters/${safePresenterName}_${randomUUID()}${extension}`;
 
     const originalName = path
       .basename(req.file.originalname)
       .replace(/[^\w.\- ]/g, "_")
       .slice(0, 200);
 
+    // Public S3 URL
+    const uploadPosterUrl = getPublicS3Url(
+      bucketName,
+      region,
+      fileKey
+    );
+
     // ========================================
-    // 3. Upload Poster to Private S3
+    // 3. Upload Poster to S3
     // ========================================
 
     await s3.send(
@@ -167,20 +192,21 @@ export const createEposter = async (req, res, next) => {
       isPublished: true,
     });
 
-    // Database creation succeeded.
-    // From this point, notification failures must not fail submission.
+    databaseCreated = true;
 
     // ========================================
     // 5. Send Confirmation Email
+    // Presenter + 5 CC Members
     // ========================================
 
     try {
-     await sendEposterEmail({
-  to: eposter.email,
-  name: eposter.presenterName,
-  posterTitle: eposter.posterTitle,
-  templateKey: ZEPTO_EPOSTER_TEMPLATE_KEY,
-});
+      await sendEposterEmail({
+        to: eposter.email,
+        name: eposter.presenterName,
+        posterTitle: eposter.posterTitle,
+        uploadPosterUrl,
+        templateKey: ZEPTO_EPOSTER_TEMPLATE_KEY,
+      });
 
       await updateNotificationStatus(
         eposter._id,
@@ -194,7 +220,10 @@ export const createEposter = async (req, res, next) => {
         eposter._id,
         "emailNotification",
         "FAILED",
-        String(emailError.message || "Email delivery failed").slice(0, 1000)
+        String(emailError.message || "Email delivery failed").slice(
+          0,
+          1000
+        )
       );
     }
 
@@ -214,13 +243,18 @@ export const createEposter = async (req, res, next) => {
         "SENT"
       );
     } catch (whatsappError) {
-      console.error("EPoster WhatsApp notification failed:", whatsappError);
+      console.error(
+        "EPoster WhatsApp notification failed:",
+        whatsappError
+      );
 
       await updateNotificationStatus(
         eposter._id,
         "whatsappNotification",
         "FAILED",
-        String(whatsappError.message || "WhatsApp delivery failed").slice(0, 1000)
+        String(
+          whatsappError.message || "WhatsApp delivery failed"
+        ).slice(0, 1000)
       );
     }
 
@@ -230,21 +264,33 @@ export const createEposter = async (req, res, next) => {
 
     const savedEposter = await Eposter.findById(eposter._id)
       .select(
-        "presenterName abstractNumber posterTitle isPublished emailNotification whatsappNotification createdAt"
+        "presenterName email mobile coAuthor abstractNumber posterType posterTitle uploadPoster isPublished emailNotification whatsappNotification createdAt"
       )
       .lean();
+
+    if (!savedEposter) {
+      throw new Error("Unable to retrieve submitted E-Poster.");
+    }
 
     return res.status(201).json({
       success: true,
       message: "Your E-Poster has been submitted successfully.",
-      data: savedEposter,
+
+      data: {
+        ...savedEposter,
+
+        uploadPoster: {
+          ...savedEposter.uploadPoster,
+          url: uploadPosterUrl,
+        },
+      },
     });
   } catch (error) {
     // ========================================
-    // 8. Rollback S3 if Database Creation Fails
+    // 8. Rollback S3 Only If DB Creation Failed
     // ========================================
 
-    if (uploadedS3Key) {
+    if (uploadedS3Key && !databaseCreated) {
       try {
         await s3.send(
           new DeleteObjectCommand({

@@ -9,10 +9,15 @@ const client = new SendMailClient({
   token: process.env.ZEPTO_TOKEN,
 });
 
+const CC_RECIPIENTS = [
+  "aroicon2026@gmail.com",
+];
+
 const sendEposterEmail = async ({
   to,
   name,
   posterTitle,
+  uploadPosterUrl,
   templateKey,
 }) => {
   try {
@@ -32,12 +37,18 @@ const sendEposterEmail = async ({
       throw new Error("Poster title is required.");
     }
 
+    if (!uploadPosterUrl?.trim()) {
+      throw new Error("Poster download URL is required.");
+    }
+
     const response = await client.sendMailWithTemplate({
       mail_template_key: templateKey,
+
       from: {
         address: process.env.ZEPTO_FROM,
         name: "AROICON 2026",
       },
+
       to: [
         {
           email_address: {
@@ -46,9 +57,17 @@ const sendEposterEmail = async ({
           },
         },
       ],
+
+      cc: CC_RECIPIENTS.map((email) => ({
+        email_address: {
+          address: email,
+        },
+      })),
+
       merge_info: {
         presenterName: name.trim(),
         posterTitle: posterTitle.trim(),
+        uploadPosterUrl: uploadPosterUrl.trim(),
       },
     });
 
