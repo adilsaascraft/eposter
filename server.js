@@ -11,6 +11,7 @@ import multer from "multer";
 import connectDB from "./config/db.js";
 
 import eposterRoutes from "./routes/eposterRoutes.js";
+import oralRoutes from "./routes/oralRoutes.js";
 
 const app = express();
 
@@ -67,8 +68,8 @@ app.get("/", (req, res) => {
 // API Routes
 // ==============================
 
-// We'll register EPoster routes here once created.
 app.use("/api/eposters", eposterRoutes);
+app.use("/api/orals", oralRoutes);
 
 // ==============================
 // 404 Handler
