@@ -12,6 +12,7 @@ import connectDB from "./config/db.js";
 
 import eposterRoutes from "./routes/eposterRoutes.js";
 import oralRoutes from "./routes/oralRoutes.js";
+import facultyPresentationRoutes from "./routes/facultyPresentationRoutes.js";
 
 const app = express();
 
@@ -70,6 +71,10 @@ app.get("/", (req, res) => {
 
 app.use("/api/eposters", eposterRoutes);
 app.use("/api/orals", oralRoutes);
+app.use(
+  "/api/faculty-presentations",
+  facultyPresentationRoutes
+);
 
 // ==============================
 // 404 Handler
